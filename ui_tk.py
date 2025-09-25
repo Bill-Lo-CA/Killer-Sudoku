@@ -2,7 +2,7 @@ import tkinter as tk
 from tkinter import messagebox
 from constants import (
     CELL_SIZE, GRID_SIZE, BOARD_PADDING, LINE_THIN, LINE_THICK,
-    CAGE_LINE_WIDTH, CAGE_DASH,
+    CAGE_LINE_WIDTH, CAGE_LINE_SHIFT, CAGE_DASH,
     BG, GRID_COLOR, HILITE, SELECT, FIXED_FG, USER_FG, ERR_FG, CAGE_SUM_FG,
     FONT_BIG, FONT_NOTE, FONT_UI
 )
@@ -157,37 +157,34 @@ class KillerSudokuApp:
 
     def draw_cages(self):
         x0 = y0 = BOARD_PADDING
-        in_cage = {}
         for cage in self.game.cages:
+            in_cage = {}
             for (r,c) in cage.cells:
                 in_cage[(r,c)] = cage
-
-        for cage in self.game.cages:
             # 和數標籤：籠子最靠左上角的 cell（以 row, col lexicographic 最小視為左上）
-            top_left = min(cage.cells)
-            tx = x0 + top_left[1]*CELL_SIZE + 4
-            ty = y0 + top_left[0]*CELL_SIZE + 4
-            self.canvas.create_text(tx, ty, anchor="nw", text=str(cage.total),
+            top_left_x, top_left_y = min(cage.cells)
+            tx = x0 + top_left_x * CELL_SIZE + 4
+            ty = y0 + top_left_y * CELL_SIZE + 4
+            self.canvas.create_text(ty, tx, anchor="nw", text=str(cage.total),
                                     font=("Segoe UI", 10, "bold"), fill=CAGE_SUM_FG)
-
             for (r,c) in cage.cells:
                 x = x0 + c * CELL_SIZE
                 y = y0 + r * CELL_SIZE
                 # 上
                 if (r-1, c) not in in_cage:
-                    self.canvas.create_line(x, y, x+CELL_SIZE, y,
+                    self.canvas.create_line(x, y + CAGE_LINE_SHIFT, x + CELL_SIZE, y + CAGE_LINE_SHIFT,
                                             dash=CAGE_DASH, width=CAGE_LINE_WIDTH)
                 # 下
                 if (r+1, c) not in in_cage:
-                    self.canvas.create_line(x, y+CELL_SIZE, x+CELL_SIZE, y+CELL_SIZE,
+                    self.canvas.create_line(x, y + CELL_SIZE - CAGE_LINE_SHIFT, x + CELL_SIZE, y + CELL_SIZE - CAGE_LINE_SHIFT,
                                             dash=CAGE_DASH, width=CAGE_LINE_WIDTH)
                 # 左
                 if (r, c-1) not in in_cage:
-                    self.canvas.create_line(x, y, x, y+CELL_SIZE,
+                    self.canvas.create_line(x + CAGE_LINE_SHIFT, y, x + CAGE_LINE_SHIFT, y + CELL_SIZE,
                                             dash=CAGE_DASH, width=CAGE_LINE_WIDTH)
                 # 右
                 if (r, c+1) not in in_cage:
-                    self.canvas.create_line(x+CELL_SIZE, y, x+CELL_SIZE, y+CELL_SIZE,
+                    self.canvas.create_line(x + CELL_SIZE - CAGE_LINE_SHIFT, y, x + CELL_SIZE - CAGE_LINE_SHIFT, y + CELL_SIZE,
                                             dash=CAGE_DASH, width=CAGE_LINE_WIDTH)
 
     def flash_error(self, r, c):

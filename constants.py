@@ -6,6 +6,7 @@ LINE_THIN = 1
 LINE_THICK = 3
 
 CAGE_LINE_WIDTH = 2        # 籠子線寬（虛線）
+CAGE_LINE_SHIFT = 4        # 籠子偏移
 CAGE_DASH = (3, 3)         # (dash_length, gap_length)
 
 BG = "#f6eddc"
