@@ -10,4 +10,18 @@ class Cell:
 @dataclass
 class Cage:
     total: int
-    cells: List[Tuple[int, int]]  # list of (r, c)
+    cells: List[Tuple[int, int]] = field(default_factory=list)
+    
+    def append(self, r: int, c: int) -> None:
+        self.cells.append((r, c))
+
+@dataclass
+class StrictCage(Cage):
+    numbers: Set[int] = field(default_factory=set)
+
+    def append_number(self, num: int) -> bool:
+        if num in self.numbers:
+            return False
+        else:
+            self.numbers.add(num)
+            return True

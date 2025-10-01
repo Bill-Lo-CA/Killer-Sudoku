@@ -106,6 +106,7 @@ class Game:
             for cc in range(bc, bc + 3):
                 if (rr, cc) != (r, c) and self.board[rr][cc].value == v:
                     return True
+        # 新增 同一個BOX中數字超過視為confilct
         return False
 
     def cage_of(self, r: int, c: int):

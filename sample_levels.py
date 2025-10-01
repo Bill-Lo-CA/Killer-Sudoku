@@ -3,7 +3,7 @@ from models import Cage
 def get_sample_starters():
     # (row, col): value — 示意起始數
     return {
-        (1, 2): 7,
+        (1, 3): 7,
         (3, 0): 6,
         (4, 3): 6,
         (3, 5): 1,
