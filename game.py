@@ -1,13 +1,13 @@
 import time
 from typing import List, Tuple
-from constants import GRID_SIZE
+from constants import UI
 from models import Cell, Cage
 
 Snapshot = List[List[Tuple[int, set, bool]]]
 
 class Game:
     """純邏輯層（不依賴 Tk）：盤面、規則、undo、計時等。"""
-    def __init__(self, starters: dict, cages: List[Cage], grid_size: int = GRID_SIZE):
+    def __init__(self, starters: dict, cages: List[Cage], grid_size: int = UI.GRID_SIZE):
         self.grid_size = grid_size
         self.board: List[List[Cell]] = [[Cell() for _ in range(grid_size)] for _ in range(grid_size)]
         self.cages = cages
