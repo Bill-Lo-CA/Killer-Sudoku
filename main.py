@@ -5,10 +5,9 @@ from generator import SudokuGenerator
 
 def main():
     g = SudokuGenerator()
-    cages = g.puzzle()
-    
+    cages, ans = g.puzzle()
     root = tk.Tk()
-    game = Game(starters={}, cages=cages)
+    game = Game(starters={}, cages=cages, ans=ans)
     KillerSudokuApp(root, game)
     root.mainloop()
 

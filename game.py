@@ -7,8 +7,9 @@ Snapshot = List[List[Tuple[int, set, bool]]]
 
 class Game:
     """純邏輯層（不依賴 Tk）：盤面、規則、undo、計時等。"""
-    def __init__(self, starters: dict, cages: List[Cage], grid_size: int = UI.GRID_SIZE):
+    def __init__(self, starters: dict, cages: List[Cage], ans: List[List[int]], grid_size: int = UI.GRID_SIZE):
         self.grid_size = grid_size
+        self.ans = ans
         self.board: List[List[Cell]] = [[Cell() for _ in range(grid_size)] for _ in range(grid_size)]
         self.cages = cages
         self.fixed_starters = starters
@@ -87,7 +88,17 @@ class Game:
         if conflict:
             self.mistakes += 1
         return conflict, self.is_solved()
-
+    
+    # ---- 指定位置的值 ----
+    def direct_hint(self) -> bool:
+        r, c = self.selected
+        cell = self.board[r][c]
+        if cell.fixed: return
+        cell.notes.clear()
+        cell.value = self.ans[r][c]
+        cell.fixed = True
+        return self.is_solved()
+    
     # ---- 規則檢查 ----
     def has_conflict(self, r: int, c: int) -> bool:
         v = self.board[r][c].value

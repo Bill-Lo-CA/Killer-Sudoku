@@ -15,13 +15,15 @@ class KillerSudokuApp:
         w = h = UI.BOARD_PADDING * 2 + UI.CELL_SIZE * UI.GRID_SIZE
         self.canvas = tk.Canvas(root, width=w, height=h, bg=COLOR.BG, highlightthickness=0)
         self.canvas.grid(row=0, column=0, columnspan=5, padx=10, pady=10)
+        self.hint_times = 3
 
         # UI
         self.btn_undo   = tk.Button(root, text = "Undo",         command = self.undo,          font = FONT.FONT_UI)
         self.btn_clear  = tk.Button(root, text = "Clear",        command = self.clear_cell,    font = FONT.FONT_UI)
         self.btn_pencil = tk.Button(root, text = "Pencil: OFF",  command = self.toggle_pencil, font = FONT.FONT_UI)
         self.btn_reset  = tk.Button(root, text = "Reset",        command = self.reset,         font = FONT.FONT_UI)
-        self.btn_hint   = tk.Button(root, text = "Hint (stub)",  command = self.hint,          font = FONT.FONT_UI)
+        self.btn_hint   = tk.Button(root, text = "Hint (3/3)",   command = self.hint,          font = FONT.FONT_UI)
+        
 
         self.btn_undo.grid(  row = 1, column = 0, padx = 6, pady = (0, 10), sticky = "ew")
         self.btn_clear.grid( row = 1, column = 1, padx = 6, pady = (0, 10), sticky = "ew")
@@ -67,7 +69,7 @@ class KillerSudokuApp:
     # ---- 工具 ----
     def xy_to_rc(self, x, y):
         x0 = y0 = UI.BOARD_PADDING
-        if not (x0 <= x <= x0 + UI.CELL_SIZE*UI.GRID_SIZE and y0 <= y <= y0 + UI.CELL_SIZE*UI.GRID_SIZE):
+        if not (x0 <= x <= x0 + UI.CELL_SIZE*UI.GRID_SIZE and y0 <= y <= y0 + UI.CELL_SIZE * UI.GRID_SIZE):
             return None, None
         c = (x - x0) // UI.CELL_SIZE
         r = (y - y0) // UI.CELL_SIZE
@@ -92,10 +94,15 @@ class KillerSudokuApp:
         self.redraw()
 
     def hint(self):
-        messagebox.showinfo("Hint", "這裡提供框架；之後可接上解題器/提示邏輯。")
-
-    def all_hint(self):
-        return
+        if self.hint_times == 0:
+            messagebox.showinfo("", "No more Hints left")
+            return
+        is_solved = self.game.direct_hint()
+        self.hint_times -= 1
+        self.btn_hint.config(text=f"Hint ({self.hint_times}/3)")
+        if is_solved:
+            messagebox.showinfo("Congrats!", f"Puzzle solved!\nTime: {self.game.elapsed_str()}  Mistakes: {self.game.mistakes}")   
+        self.redraw()
 
     # ---- 視覺 ----
     def redraw(self):
@@ -110,7 +117,7 @@ class KillerSudokuApp:
                 y = y0 + r * UI.CELL_SIZE
                 if r == sr or c == sc or (r // 3, c // 3) == (sr // 3, sc // 3):
                     self.canvas.create_rectangle(x, y, x + UI.CELL_SIZE, y + UI.CELL_SIZE,
-                                                 fill=COLOR.HILITE, outline="")
+                                                 fill=COLOR.HILITE, outline = "")
 
         # 選中
         x = x0 + sc * UI.CELL_SIZE
@@ -150,12 +157,20 @@ class KillerSudokuApp:
     def draw_notes(self, r, c, notes):
         x0 = UI.BOARD_PADDING + c * UI.CELL_SIZE
         y0 = UI.BOARD_PADDING + r * UI.CELL_SIZE
+
+        compression = 0.65
+
         for n in range(1, 10):
             if n in notes:
                 sub_r = (n - 1) // 3
                 sub_c = (n - 1) % 3
-                px = x0 + (sub_c + 0.5) * (UI.CELL_SIZE / 3)
-                py = y0 + (sub_r + 0.5) * (UI.CELL_SIZE / 3)
+
+                offset_x = (2 - sub_c) * (UI.CELL_SIZE / 3) * (1 - compression)
+                offset_y = (2 - sub_r) * (UI.CELL_SIZE / 3) * (1 - compression)
+
+                px = x0 + (sub_c + 0.5) * (UI.CELL_SIZE / 3) + offset_x
+                py = y0 + (sub_r + 0.5) * (UI.CELL_SIZE / 3) + offset_y
+
                 self.canvas.create_text(px, py, text=str(n), font=FONT.FONT_NOTE, fill=COLOR.NOTE_COLOR)
 
     def draw_cages(self):
@@ -235,8 +250,8 @@ class KillerSudokuApp:
             )
 
     def flash_error(self, r, c):
-        x0 = UI.BOARD_PADDING + c * UI.CELL_SIZE + UI.CELL_SIZE/2
-        y0 = UI.BOARD_PADDING + r * UI.CELL_SIZE + UI.CELL_SIZE/2
+        x0 = UI.BOARD_PADDING + c * UI.CELL_SIZE + UI.CELL_SIZE / 2
+        y0 = UI.BOARD_PADDING + r * UI.CELL_SIZE + UI.CELL_SIZE / 2
         v = self.game.board[r][c].value
         self.canvas.create_text(x0, y0, text=str(v), font=FONT.FONT_BIG, fill=COLOR.ERR_FG, tag="err")
         self.canvas.after(300, lambda: self.canvas.delete("err"))

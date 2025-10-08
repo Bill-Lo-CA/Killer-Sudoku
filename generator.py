@@ -4,6 +4,7 @@ from constants import UI
 from sudoku_full import generate_full_solution
 
 import random
+import math
 
 class SudokuGenerator:
     def __init__(self, seed: Optional[int] = None):
@@ -11,7 +12,8 @@ class SudokuGenerator:
         self._direction = [(1, 0), (0, 1), (-1, 0), (0, -1)]
 
     def puzzle(self):
-        return self.cage_generator(self.killer_sudoku())
+        b = self.killer_sudoku()
+        return self.cage_generator(b), b
     
     def killer_sudoku(self):
         return generate_full_solution(seed=self.seed)
@@ -43,11 +45,19 @@ class SudokuGenerator:
         return cages
 
     def _has_next_cell(self, curr_cell_num: int) -> bool:
-        return random.randint(1, 10) > curr_cell_num
+        # Calculate probability of returning True
+        if curr_cell_num <= 5:
+            # Steep exponential decay from 1 to 5
+            # At n=1: ~95% True, at n=5: ~5% True
+            prob_true = 0.95 * math.exp(-0.75 * (curr_cell_num - 1))
+        else:
+            # Gentle logarithmic rise from 5 to 10
+            # At n=5: ~5% True, at n=10: ~50% True
+            prob_true = 0.05 + 0.45 * math.log(curr_cell_num - 4) / math.log(6)
+
+        return random.random() < prob_true
 
 if __name__ == "__main__":
-    # generator = SudokuGenerator()
-    # board = generator.killer_sudoku()
     g = SudokuGenerator()
     for num in range(10):
         t = 0
