@@ -99,6 +99,9 @@ class Game:
         cell.fixed = True
         return self.is_solved()
     
+    def cage_data(self):
+        return [(min(cage.cells), str(cage.total)) for cage in self.cages]
+    
     # ---- 規則檢查 ----
     def has_conflict(self, r: int, c: int) -> bool:
         v = self.board[r][c].value

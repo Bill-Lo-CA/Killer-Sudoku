@@ -34,7 +34,7 @@ class KillerSudokuApp:
         self.status = tk.Label(root, text="Mistakes: 0   Time: 00:00", anchor="w", bg=COLOR.BG, font=FONT.FONT_UI)
         self.status.grid(row=2, column=0, columnspan=5, sticky="ew", padx=10, pady=(0,10))
 
-        self.cage_data = [(min(cage.cells), str(cage.total)) for cage in self.game.cages]
+        self.cage_data = self.game.cage_data()
 
         # 綁定
         self.canvas.bind("<Button-1>", self.on_click)
@@ -237,16 +237,16 @@ class KillerSudokuApp:
             # 先畫底
             self.canvas.create_rectangle(
                 x, y, x + side, y + side,
-                fill=color, outline=""
+                fill = color, outline = ""
             )
 
             # 再畫字
             self.canvas.create_text(
                 x + side / 2, y + side / 2,
-                anchor="center",
-                text=text,
-                font=font_obj,
-                fill=COLOR.CAGE_SUM_FG
+                anchor = "center",
+                text = text,
+                font = font_obj,
+                fill = COLOR.CAGE_SUM_FG
             )
 
     def flash_error(self, r, c):
