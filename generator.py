@@ -9,6 +9,7 @@ import math
 class SudokuGenerator:
     def __init__(self, seed: Optional[int] = None):
         self.seed = seed
+        self._rng = random.Random(seed)
         self._direction = [(1, 0), (0, 1), (-1, 0), (0, -1)]
 
     def puzzle(self):
@@ -33,9 +34,11 @@ class SudokuGenerator:
                 if (x, y) in used_cell: continue
                 c = add(Cage(), x, y)
                 while self._has_next_cell(len(c)):
-                    a, b = self._direction[random.randint(0, 3)]
+                    a, b = self._rng.choice(self._direction)
                     x, y = x + a, y + b
-                    if 0 <= x < UI.GRID_SIZE and 0 <= y < UI.GRID_SIZE and (x, y) not in used_cell:
+                    if (0 <= x < UI.GRID_SIZE and 0 <= y < UI.GRID_SIZE
+                            and (x, y) not in used_cell
+                            and all(board[r][col] != board[x][y] for r, col in c.cells)):
                         c = add(c, x, y)
                     else:
                         x, y = x - a, y - b
@@ -55,7 +58,7 @@ class SudokuGenerator:
             # At n=5: ~5% True, at n=10: ~50% True
             prob_true = 0.05 + 0.45 * math.log(curr_cell_num - 4) / math.log(6)
 
-        return random.random() < prob_true
+        return self._rng.random() < prob_true
 
 if __name__ == "__main__":
     g = SudokuGenerator()

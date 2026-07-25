@@ -90,7 +90,9 @@ class KillerSudokuApp:
 
     def reset(self):
         self.game.reset()
+        self.hint_times = 3
         self.btn_pencil.config(text="Pencil: OFF")
+        self.btn_hint.config(text="Hint (3/3)")
         self.redraw()
 
     def hint(self):

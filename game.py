@@ -93,7 +93,9 @@ class Game:
     def direct_hint(self) -> bool:
         r, c = self.selected
         cell = self.board[r][c]
-        if cell.fixed: return
+        if cell.fixed:
+            return self.is_solved()
+        self.push_undo()
         cell.notes.clear()
         cell.value = self.ans[r][c]
         cell.fixed = True
@@ -158,13 +160,18 @@ class Game:
         return all(self.board[r][c].value != 0 for r in range(self.grid_size) for c in range(self.grid_size))
 
     def is_solved(self) -> bool:
-        return self.is_complete() and self.all_cages_ok()
+        return (self.is_complete()
+                and self.all_cages_ok()
+                and not any(self.has_conflict(r, c)
+                            for r in range(self.grid_size)
+                            for c in range(self.grid_size)))
 
     # ---- 其他 ----
     def reset(self):
         self.board = [[Cell() for _ in range(self.grid_size)] for _ in range(self.grid_size)]
         self.apply_starters()
         self.selected = (0, 0)
+        self.pencil_mode = False
         self.mistakes = 0
         self.undo_stack.clear()
         self.start_time = time.time()
