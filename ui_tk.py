@@ -177,35 +177,48 @@ class KillerSudokuApp:
 
     def draw_cages(self):
         x0 = y0 = UI.BOARD_PADDING
+        line_options = {
+            "dash": UI.CAGE_DASH,
+            "width": UI.CAGE_LINE_WIDTH,
+            "fill": COLOR.CAGE_LINE,
+            "capstyle": tk.BUTT,
+        }
         for cage in self.game.cages:
             in_cage = { (r, c): cage for (r, c) in cage.cells }
 
             for (r, c) in cage.cells:
                 x = x0 + c * UI.CELL_SIZE
                 y = y0 + r * UI.CELL_SIZE
+                left = x if (r, c-1) in in_cage else x + UI.CAGE_LINE_SHIFT
+                right = x + UI.CELL_SIZE if (r, c+1) in in_cage else x + UI.CELL_SIZE - UI.CAGE_LINE_SHIFT
+                top = y if (r-1, c) in in_cage else y + UI.CAGE_LINE_SHIFT
+                bottom = y + UI.CELL_SIZE if (r+1, c) in in_cage else y + UI.CELL_SIZE - UI.CAGE_LINE_SHIFT
                 # 上
                 if (r-1, c) not in in_cage:
                     self.canvas.create_line(
-                        x, y + UI.CAGE_LINE_SHIFT, x + UI.CELL_SIZE, y + UI.CAGE_LINE_SHIFT,
-                        dash=UI.CAGE_DASH, width=UI.CAGE_LINE_WIDTH
+                        left, y + UI.CAGE_LINE_SHIFT, right, y + UI.CAGE_LINE_SHIFT,
+                        **line_options
                     )
                 # 下
                 if (r+1, c) not in in_cage:
                     self.canvas.create_line(
-                        x, y + UI.CELL_SIZE - UI.CAGE_LINE_SHIFT, x + UI.CELL_SIZE, y + UI.CELL_SIZE - UI.CAGE_LINE_SHIFT,
-                        dash=UI.CAGE_DASH, width=UI.CAGE_LINE_WIDTH
+                        left, y + UI.CELL_SIZE - UI.CAGE_LINE_SHIFT,
+                        right, y + UI.CELL_SIZE - UI.CAGE_LINE_SHIFT,
+                        **line_options
                     )
                 # 左
                 if (r, c-1) not in in_cage:
                     self.canvas.create_line(
-                        x + UI.CAGE_LINE_SHIFT, y, x + UI.CAGE_LINE_SHIFT, y + UI.CELL_SIZE,
-                        dash=UI.CAGE_DASH, width=UI.CAGE_LINE_WIDTH
+                        x + UI.CAGE_LINE_SHIFT, top,
+                        x + UI.CAGE_LINE_SHIFT, bottom,
+                        **line_options
                     )
                 # 右
                 if (r, c+1) not in in_cage:
                     self.canvas.create_line(
-                        x + UI.CELL_SIZE - UI.CAGE_LINE_SHIFT, y, x + UI.CELL_SIZE - UI.CAGE_LINE_SHIFT, y + UI.CELL_SIZE,
-                        dash=UI.CAGE_DASH, width=UI.CAGE_LINE_WIDTH
+                        x + UI.CELL_SIZE - UI.CAGE_LINE_SHIFT, top,
+                        x + UI.CELL_SIZE - UI.CAGE_LINE_SHIFT, bottom,
+                        **line_options
                     )
         self.draw_total()
 

@@ -12,20 +12,21 @@ class Ui:
 
     CAGE_LINE_WIDTH: Final[int] = 2                 # 籠子線寬（虛線）
     CAGE_LINE_SHIFT: Final[int] = 4                 # 籠子偏移
-    CAGE_DASH: Final[Tuple[int, int]] = (3, 3)      # (dash_length, gap_length)
+    CAGE_DASH: Final[Tuple[int, int]] = (8, 4)      # (dash_length, gap_length)
     CAGE_PAD: Final[int] = 5
 
 @dataclass(frozen=True)
 class Color:
     BG: Final[str] = "#f6eddc"
     GRID_COLOR: Final[str] = "#2f2f2f"
-    NOTE_COLOR: Final[str] = "#374151"
+    CAGE_LINE: Final[str] = "#1f2937"
+    NOTE_COLOR: Final[str] = "#1f2937"
     HILITE: Final[str] = "#cfe8ff"
     SELECT: Final[str] = "#9cc7ff"
-    FIXED_FG: Final[str] = "#1d4ed8"
-    USER_FG: Final[str] = "#111111"
+    FIXED_FG: Final[str] = "#163d8c"
+    USER_FG: Final[str] = "#050505"
     ERR_FG: Final[str] = "#d11"
-    CAGE_SUM_FG: Final[str] = "#6b7280"
+    CAGE_SUM_FG: Final[str] = "#334155"
 
 @dataclass(frozen=True)
 class Font:
