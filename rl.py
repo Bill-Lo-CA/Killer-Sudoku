@@ -19,11 +19,16 @@ from sudoku_full import format_board
 SIZE = 9
 DIGITS = tuple(range(1, 10))
 CHANNELS = 16  # grid, cage sum/size/borders, and one candidate mask per digit
-CORRECT_REWARD = 1.0
-LOGIC_REWARD = 0.1
-WRONG_REWARD = -1.0
-CLEAR_REWARD = -0.5
-SOLVED_REWARD = 10.0
+BRANCH_SUCCESS_REWARD = 1.5
+BRANCH_FAILURE_REWARD = -1.0
+BACKTRACK_REWARD = -0.5
+FORCED_SHAPING_MAX = 0.25
+CHALLENGE_WEIGHT = 0.5
+MISTAKE_BUDGET = 5
+
+
+class MistakeLimitReached(RuntimeError):
+    pass
 
 
 @lru_cache(maxsize=None)
@@ -148,18 +153,37 @@ def load_model(path: str | Path, device: torch.device) -> KillerSudokuNet:
     return model
 
 
-def step_reward(*, correct: bool, forced_moves: int = 0, solved: bool = False) -> float:
-    if not correct:
-        return WRONG_REWARD + CLEAR_REWARD
-    return CORRECT_REWARD + forced_moves * LOGIC_REWARD + (SOLVED_REWARD if solved else 0.0)
+def branch_reward(*, solved: bool, forced_moves: int = 0) -> float:
+    if not solved:
+        return BRANCH_FAILURE_REWARD + BACKTRACK_REWARD
+    forced = min(max(forced_moves, 0), SIZE * SIZE)
+    return BRANCH_SUCCESS_REWARD + FORCED_SHAPING_MAX * forced / (SIZE * SIZE)
+
+
+def challenge_reward(mistakes: int) -> float:
+    if mistakes < 0:
+        raise ValueError("mistakes cannot be negative")
+    if mistakes >= MISTAKE_BUDGET:
+        return -1.0
+    return (MISTAKE_BUDGET - mistakes) / MISTAKE_BUDGET
+
+
+def candidate_order(scores: torch.Tensor, candidates: list[int]) -> list[int]:
+    """Sample a weighted permutation using only legal candidate logits."""
+    indices = torch.tensor([digit - 1 for digit in candidates], device=scores.device)
+    candidate_scores = scores[indices]
+    noise = torch.empty_like(candidate_scores).exponential_()
+    noise.clamp_min_(torch.finfo(noise.dtype).tiny)
+    ranking = torch.argsort(candidate_scores - noise.log(), descending=True)
+    return [candidates[index] for index in ranking.tolist()]
 
 
 def apply_forced_moves(
     cages: list[Cage],
     grid: list[list[int]],
     trace: list[tuple[int, int, int, str]] | None = None,
-) -> int:
-    """Fill every current singleton candidate and return how many were filled."""
+) -> tuple[int, bool]:
+    """Fill singleton candidates and report whether the resulting state is valid."""
     by_cell = cage_map(cages)
     filled = 0
     while True:
@@ -170,7 +194,7 @@ def apply_forced_moves(
                     continue
                 candidates = valid_digits(grid, by_cell, row, col)
                 if not candidates:
-                    raise ValueError("Deterministic logic reached a contradiction")
+                    return filled, False
                 if len(candidates) == 1:
                     grid[row][col] = candidates[0]
                     if trace is not None:
@@ -181,7 +205,7 @@ def apply_forced_moves(
             if moved:
                 break
         if not moved:
-            return filled
+            return filled, True
 
 
 def choose_branch(
@@ -208,11 +232,118 @@ class EpisodeResult:
     solution: list[list[int]]
     trace: list[tuple[int, int, int, str]]
     reward: float
+    challenge_score: float
+    passed_challenge: bool
     attempts: int
-    correct: int
-    clears: int
+    backtracks: int
+    dead_ends: int
     forced_moves: int
     solved: bool
+
+
+@dataclass
+class Decision:
+    state: torch.Tensor
+    row: int
+    col: int
+    candidates: tuple[int, ...]
+    digit: int
+
+
+def decision_policy(
+    model: KillerSudokuNet,
+    decisions: list[Decision],
+    *,
+    device: torch.device,
+) -> torch.distributions.Categorical:
+    states = torch.stack([decision.state for decision in decisions]).to(device)
+    output = model(states)
+    scores = torch.stack(
+        [output[index, :, decision.row, decision.col] for index, decision in enumerate(decisions)]
+    )
+    masked_scores = torch.full_like(scores, float("-inf"))
+    for index, decision in enumerate(decisions):
+        indices = [digit - 1 for digit in decision.candidates]
+        masked_scores[index, indices] = scores[index, indices]
+    return torch.distributions.Categorical(logits=masked_scores)
+
+
+def path_loss(
+    model: KillerSudokuNet,
+    decisions: list[Decision],
+    reward: float,
+    *,
+    device: torch.device,
+    gamma: float,
+) -> torch.Tensor:
+    policy = decision_policy(model, decisions, device=device)
+    actions = torch.tensor([decision.digit - 1 for decision in decisions], device=device)
+    returns = torch.tensor(
+        [reward * gamma ** (len(decisions) - index - 1) for index in range(len(decisions))],
+        device=device,
+    )
+    return (-policy.log_prob(actions) * returns).mean()
+
+
+def branch_loss(
+    model: KillerSudokuNet,
+    samples: list[tuple[Decision, float]],
+    *,
+    device: torch.device,
+    entropy_weight: float,
+) -> torch.Tensor:
+    decisions = [decision for decision, _reward in samples]
+    rewards = torch.tensor([reward for _decision, reward in samples], device=device)
+    policy = decision_policy(model, decisions, device=device)
+    actions = torch.tensor([decision.digit - 1 for decision in decisions], device=device)
+    losses = -policy.log_prob(actions) * rewards
+    groups = []
+    for successful in (False, True):
+        group = losses[(rewards > 0) == successful]
+        if group.numel():
+            groups.append(group.mean())
+    return torch.stack(groups).mean() - entropy_weight * policy.entropy().mean()
+
+
+def train_policy(
+    model: KillerSudokuNet,
+    optimizer: torch.optim.Optimizer,
+    branch_samples: list[tuple[Decision, float]],
+    challenge_path: tuple[list[Decision], float] | None,
+    *,
+    device: torch.device,
+    entropy_weight: float,
+    gamma: float,
+) -> None:
+    losses = []
+    model.train()
+    if branch_samples:
+        losses.append(
+            branch_loss(
+                model,
+                branch_samples,
+                device=device,
+                entropy_weight=entropy_weight,
+            )
+        )
+    if challenge_path is not None and challenge_path[0]:
+        decisions, reward = challenge_path
+        losses.append(
+            CHALLENGE_WEIGHT
+            * path_loss(
+                model,
+                decisions,
+                reward,
+                device=device,
+                gamma=gamma,
+            )
+        )
+    if not losses:
+        return
+    optimizer.zero_grad()
+    sum(losses).backward()
+    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    optimizer.step()
 
 
 def train_episode(
@@ -222,82 +353,128 @@ def train_episode(
     puzzle_seed: int,
     device: torch.device,
     entropy_weight: float,
+    gamma: float,
+    max_nodes: int,
     collect_trace: bool,
 ) -> EpisodeResult:
-    cages, solution = SudokuGenerator(puzzle_seed).puzzle()
+    cages, _generated_solution = SudokuGenerator(puzzle_seed).puzzle()
     grid = [[0] * SIZE for _ in range(SIZE)]
     by_cell = cage_map(cages)
     trace: list[tuple[int, int, int, str]] = []
-    attempts = correct = clears = 0
+    active_path: list[Decision] = []
+    branch_rewards: list[float] = []
+    branch_samples: deque[tuple[Decision, float]] = deque(maxlen=256)
+    challenge_mistakes: list[Decision] = []
+    attempts = backtracks = dead_ends = forced_total = 0
 
-    forced_total = apply_forced_moves(cages, grid, trace if collect_trace else None)
-    total_reward = forced_total * LOGIC_REWARD
-    solved = is_valid_solution(grid, cages) if all(all(row) for row in grid) else False
-    if solved:
-        total_reward += SOLVED_REWARD
+    initial_forced, valid = apply_forced_moves(cages, grid, trace if collect_trace else None)
+    forced_total += initial_forced
+    if not valid:
+        raise RuntimeError("Generated puzzle starts in a contradictory state")
 
-    while not solved:
+    def restore(snapshot: list[list[int]]) -> None:
+        for row in range(SIZE):
+            for col in range(SIZE):
+                if grid[row][col] == snapshot[row][col]:
+                    continue
+                grid[row][col] = snapshot[row][col]
+                if collect_trace:
+                    trace.append((row, col, snapshot[row][col], "clear"))
+
+    def search() -> bool:
+        nonlocal attempts, backtracks, dead_ends, forced_total
         branch = choose_branch(grid, by_cell)
         if branch is None:
             solved = is_valid_solution(grid, cages)
-            break
+            if not solved:
+                dead_ends += 1
+            return solved
 
         row, col, candidates = branch
-        model.train()
-        state = encode_state(cages, grid).unsqueeze(0).to(device)
-        scores = model(state)[0, :, row, col]
-        masked_scores = torch.full_like(scores, float("-inf"))
-        masked_scores[[digit - 1 for digit in candidates]] = scores[[digit - 1 for digit in candidates]]
-        policy = torch.distributions.Categorical(logits=masked_scores)
-        action = policy.sample()
-        digit = action.item() + 1
-        attempts += 1
+        state = encode_state(cages, grid)
+        model.eval()
+        with torch.no_grad():
+            scores = model(state.unsqueeze(0).to(device))[0, :, row, col]
+            order = candidate_order(scores, candidates)
 
-        if collect_trace:
-            trace.append((row, col, digit, "model"))
-        grid[row][col] = digit
-        is_correct = digit == solution[row][col]
+        for digit in order:
+            attempts += 1
+            if attempts > max_nodes:
+                raise RuntimeError(f"Training search exceeded {max_nodes} nodes")
 
-        if is_correct:
-            correct += 1
-            forced = apply_forced_moves(cages, grid, trace if collect_trace else None)
-            forced_total += forced
-            solved = is_valid_solution(grid, cages) if all(all(values) for values in grid) else False
-            reward = step_reward(correct=True, forced_moves=forced, solved=solved)
-        else:
-            clears += 1
-            grid[row][col] = 0
+            snapshot = [values[:] for values in grid]
+            decision = Decision(state, row, col, tuple(candidates), digit)
+            active_path.append(decision)
+            grid[row][col] = digit
             if collect_trace:
-                trace.append((row, col, 0, "clear"))
-            reward = step_reward(correct=False)
+                trace.append((row, col, digit, "model"))
 
-        total_reward += reward
-        loss = -policy.log_prob(action) * reward - entropy_weight * policy.entropy()
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        if not is_correct:
-            correction = solution[row][col]
-            grid[row][col] = correction
-            if collect_trace:
-                trace.append((row, col, correction, "correction"))
-            forced = apply_forced_moves(cages, grid, trace if collect_trace else None)
+            forced, branch_valid = apply_forced_moves(
+                cages,
+                grid,
+                trace if collect_trace else None,
+            )
             forced_total += forced
-            total_reward += forced * LOGIC_REWARD
-            solved = is_valid_solution(grid, cages) if all(all(values) for values in grid) else False
+            solved = False
+            if branch_valid:
+                solved = search()
+            else:
+                dead_ends += 1
+
+            if solved:
+                reward = branch_reward(solved=True, forced_moves=forced)
+                branch_rewards.append(reward)
+                branch_samples.append((decision, reward))
+                return True
+
+            reward = branch_reward(solved=False)
+            branch_rewards.append(reward)
+            branch_samples.append((decision, reward))
+            active_path.pop()
+            restore(snapshot)
+            backtracks += 1
+            if len(challenge_mistakes) < MISTAKE_BUDGET:
+                challenge_mistakes.append(decision)
+
+        return False
+
+    solved = is_valid_solution(grid, cages) if all(all(row) for row in grid) else search()
+    if not solved:
+        raise RuntimeError("Generated puzzle could not be solved during training")
+
+    passed_challenge = backtracks < MISTAKE_BUDGET
+    score = challenge_reward(backtracks)
+    challenge_path = (
+        (active_path.copy(), score)
+        if passed_challenge
+        else (challenge_mistakes, score)
+    )
+    train_policy(
+        model,
+        optimizer,
+        list(branch_samples),
+        challenge_path,
+        device=device,
+        entropy_weight=entropy_weight,
+        gamma=gamma,
+    )
+
+    solution = [row[:] for row in grid]
+    reward = sum(branch_rewards) / len(branch_rewards) if branch_rewards else 0.0
 
     return EpisodeResult(
         puzzle_seed=puzzle_seed,
         cages=cages,
         solution=solution,
         trace=trace,
-        reward=total_reward,
+        reward=reward,
+        challenge_score=score,
+        passed_challenge=passed_challenge,
         attempts=attempts,
-        correct=correct,
-        clears=clears,
+        backtracks=backtracks,
+        dead_ends=dead_ends,
         forced_moves=forced_total,
-        solved=solved,
+        solved=True,
     )
 
 
@@ -306,6 +483,8 @@ def train_model(
     episodes: int = 1_000,
     learning_rate: float = 1e-3,
     entropy_weight: float = 0.01,
+    gamma: float = 0.99,
+    max_nodes: int = 1_000_000,
     seed: int = 0,
     model_path: str | Path = "killer_sudoku_model.pth",
     device_name: str = "auto",
@@ -313,14 +492,20 @@ def train_model(
 ) -> KillerSudokuNet:
     if episodes < 1:
         raise ValueError("episodes must be positive")
+    if not 0.0 <= gamma <= 1.0:
+        raise ValueError("gamma must be between 0 and 1")
+    if max_nodes < 1:
+        raise ValueError("max_nodes must be positive")
 
     torch.manual_seed(seed)
     device = choose_device(device_name)
     model = KillerSudokuNet().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     recent_rewards: deque[float] = deque(maxlen=100)
-    recent_accuracies: deque[float] = deque(maxlen=100)
-    recent_clears: deque[int] = deque(maxlen=100)
+    recent_challenge_scores: deque[float] = deque(maxlen=100)
+    recent_decisions: deque[int] = deque(maxlen=100)
+    recent_backtracks: deque[int] = deque(maxlen=100)
+    recent_within_five: deque[bool] = deque(maxlen=100)
 
     print(f"Training on {device}")
     for episode in range(1, episodes + 1):
@@ -330,21 +515,27 @@ def train_model(
             puzzle_seed=seed + episode - 1,
             device=device,
             entropy_weight=entropy_weight,
+            gamma=gamma,
+            max_nodes=max_nodes,
             collect_trace=episode_callback is not None,
         )
-        accuracy = result.correct / result.attempts if result.attempts else 1.0
         recent_rewards.append(result.reward)
-        recent_accuracies.append(accuracy)
-        recent_clears.append(result.clears)
+        recent_challenge_scores.append(result.challenge_score)
+        recent_decisions.append(result.attempts)
+        recent_backtracks.append(result.backtracks)
+        recent_within_five.append(result.passed_challenge)
         if episode == 1 or episode % 10 == 0 or episode == episodes:
             window = len(recent_rewards)
             print(
-                f"Episode {episode}/{episodes} - reward: {result.reward:.1f} - "
-                f"first-choice accuracy: {accuracy:.1%} - clears: {result.clears} - "
-                f"forced: {result.forced_moves} | avg{window} reward: "
-                f"{sum(recent_rewards) / window:.1f} - first-choice accuracy: "
-                f"{sum(recent_accuracies) / window:.1%} - clears: "
-                f"{sum(recent_clears) / window:.1f}"
+                f"Episode {episode}/{episodes} - mean branch reward: {result.reward:.2f} - "
+                f"challenge: {result.challenge_score:+.1f} - "
+                f"decisions: {result.attempts} - backtracks: {result.backtracks} - "
+                f"dead ends: {result.dead_ends} - forced: {result.forced_moves} | "
+                f"avg{window} branch reward: {sum(recent_rewards) / window:.2f} - "
+                f"challenge: {sum(recent_challenge_scores) / window:+.2f} - "
+                f"decisions: {sum(recent_decisions) / window:.1f} - backtracks: "
+                f"{sum(recent_backtracks) / window:.1f} - pass@5: "
+                f"{sum(recent_within_five) / window:.1%}"
             )
         if episode_callback is not None:
             episode_callback(model, episode, result)
@@ -382,19 +573,24 @@ def solve_puzzle(
     *,
     device: torch.device | None = None,
     max_nodes: int = 1_000_000,
+    max_mistakes: int | None = MISTAKE_BUDGET,
     trace: list[tuple[int, int, int]] | None = None,
-) -> tuple[list[list[int]], int]:
+) -> tuple[list[list[int]], int, int]:
     """Solve with exact constraints; use the model only to order candidates."""
+    if max_mistakes is not None and max_mistakes < 1:
+        raise ValueError("max_mistakes must be positive or None")
+
     grid = [[0] * SIZE for _ in range(SIZE)]
     by_cell = cage_map(cages)
     device = device or torch.device("cpu")
     nodes = 0
+    mistakes = 0
 
     if model is not None:
         model.eval()
 
     def search() -> bool:
-        nonlocal nodes
+        nonlocal mistakes, nodes
         nodes += 1
         if nodes > max_nodes:
             raise RuntimeError(f"Search exceeded {max_nodes} nodes")
@@ -433,11 +629,17 @@ def solve_puzzle(
             grid[row][col] = 0
             if trace is not None:
                 trace.append((row, col, 0))
+            if len(candidates) > 1:
+                mistakes += 1
+                if max_mistakes is not None and mistakes >= max_mistakes:
+                    raise MistakeLimitReached(
+                        f"used all {max_mistakes} allowed mistakes after {nodes} search nodes"
+                    )
         return False
 
     if not search():
         raise ValueError("Puzzle has no solution")
-    return grid, nodes
+    return grid, nodes, mistakes
 
 
 def watch_solution(
@@ -445,6 +647,8 @@ def watch_solution(
     solution: list[list[int]],
     trace: list[tuple[int, int, int]],
     nodes: int,
+    mistakes: int,
+    max_mistakes: int,
     delay_ms: int,
 ) -> None:
     if delay_ms < 1:
@@ -463,7 +667,10 @@ def watch_solution(
     def play_next() -> None:
         nonlocal step
         if step == len(trace):
-            root.title(f"Killer Sudoku AI - solved in {nodes} search nodes")
+            root.title(
+                f"Killer Sudoku AI - solved in {nodes} search nodes - "
+                f"mistakes {mistakes}/{max_mistakes}"
+            )
             return
 
         row, col, value = trace[step]
@@ -517,6 +724,8 @@ def watch_training(args: argparse.Namespace) -> None:
                 episodes=args.episodes,
                 learning_rate=args.learning_rate,
                 entropy_weight=args.entropy_weight,
+                gamma=args.gamma,
+                max_nodes=args.max_nodes,
                 seed=args.seed,
                 model_path=args.model,
                 device_name=args.device,
@@ -542,11 +751,11 @@ def watch_training(args: argparse.Namespace) -> None:
                 gate.set()
                 return
             if step == len(result.trace):
-                accuracy = result.correct / result.attempts if result.attempts else 1.0
                 root.title(
-                    f"Episode {episode}/{args.episodes} - reward {result.reward:.1f} - "
-                    f"first-choice accuracy {accuracy:.1%} - clears {result.clears} - "
-                    f"forced {result.forced_moves}"
+                    f"Episode {episode}/{args.episodes} - mean branch reward "
+                    f"{result.reward:.2f} - challenge {result.challenge_score:+.1f} - "
+                    f"solved - decisions {result.attempts} - backtracks "
+                    f"{result.backtracks} - forced {result.forced_moves}"
                 )
                 current_gate = None
                 gate.set()
@@ -603,6 +812,8 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--episodes", type=int, default=1_000)
     train.add_argument("--learning-rate", type=float, default=1e-3)
     train.add_argument("--entropy-weight", type=float, default=0.01)
+    train.add_argument("--gamma", type=float, default=0.99)
+    train.add_argument("--max-nodes", type=int, default=1_000_000)
     train.add_argument("--seed", type=int, default=0)
     train.add_argument("--model", default="killer_sudoku_model.pth")
     train.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
@@ -615,6 +826,7 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--model", default="killer_sudoku_model.pth")
         command.add_argument("--seed", type=int, default=42)
         command.add_argument("--max-nodes", type=int, default=1_000_000)
+        command.add_argument("--max-mistakes", type=int, default=MISTAKE_BUDGET)
         command.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     watch.add_argument("--delay-ms", type=int, default=120)
     return parser
@@ -630,6 +842,8 @@ def main() -> None:
             episodes=args.episodes,
             learning_rate=args.learning_rate,
             entropy_weight=args.entropy_weight,
+            gamma=args.gamma,
+            max_nodes=args.max_nodes,
             seed=args.seed,
             model_path=args.model,
             device_name=args.device,
@@ -640,17 +854,32 @@ def main() -> None:
     model = load_model(args.model, device)
     cages, _ = SudokuGenerator(args.seed).puzzle()
     trace = [] if args.command == "watch" else None
-    solution, nodes = solve_puzzle(
-        cages,
-        model,
-        device=device,
-        max_nodes=args.max_nodes,
-        trace=trace,
-    )
+    try:
+        solution, nodes, mistakes = solve_puzzle(
+            cages,
+            model,
+            device=device,
+            max_nodes=args.max_nodes,
+            max_mistakes=args.max_mistakes,
+            trace=trace,
+        )
+    except MistakeLimitReached as error:
+        raise SystemExit(f"Failed seed {args.seed}: {error}") from None
     if trace is not None:
-        watch_solution(cages, solution, trace, nodes, args.delay_ms)
+        watch_solution(
+            cages,
+            solution,
+            trace,
+            nodes,
+            mistakes,
+            args.max_mistakes,
+            args.delay_ms,
+        )
         return
-    print(f"Solved seed {args.seed} in {nodes} search nodes on {device}")
+    print(
+        f"Solved seed {args.seed} in {nodes} search nodes with "
+        f"{mistakes}/{args.max_mistakes} mistakes on {device}"
+    )
     print(format_board(solution))
 
 
